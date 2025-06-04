@@ -43,6 +43,15 @@ def load_progress(channel_name):
         print(f"Erreur lors du chargement de la progression: {str(e)}")
         return set()
 
+def reset_progress(channel_name):
+    try:
+        progress_file = f"progress_{channel_name}.json"
+        if os.path.exists(progress_file):
+            os.remove(progress_file)
+            print(f"Fichier de progression {progress_file} supprimé")
+    except Exception as e:
+        print(f"Erreur lors de la suppression du fichier de progression: {str(e)}")
+
 def print_info():
     current_year = datetime.now().year
     print("\n" + "="*50)
@@ -87,9 +96,11 @@ def get_downloaded_files(download_folder):
         if not os.path.exists(download_folder):
             return set()
         
+        # Récupérer tous les fichiers MP3
         files = {f for f in os.listdir(download_folder) if f.endswith('.mp3')}
         base_names = set()
         for file in files:
+            # Enlever les numéros de doublons (_1, _2, etc.)
             base_name = re.sub(r'_\d+\.mp3$', '.mp3', file)
             base_names.add(base_name)
         
@@ -166,16 +177,37 @@ async def main():
         channel_folder = get_channel_folder_name(channel_username)
         download_folder = os.path.join('telegram_mp3s', channel_folder)
         
-        if not os.path.exists(download_folder):
+        # Vérifier si le dossier existe et s'il contient des fichiers
+        if os.path.exists(download_folder):
+            files = [f for f in os.listdir(download_folder) if f.endswith('.mp3')]
+            if not files:
+                print(f"Dossier {download_folder} vide, réinitialisation de la progression...")
+                reset_progress(channel_folder)
+        else:
             print(f"Création du dossier {download_folder}...")
             os.makedirs(download_folder)
+            reset_progress(channel_folder)
         
         print(f"Téléchargement des fichiers dans {download_folder}")
         
-        # Charger la progression précédente
+        # Charger la progression précédente et les fichiers existants
         downloaded_files = load_progress(channel_folder)
+        existing_files = get_downloaded_files(download_folder)
+        
+        # Si aucun fichier n'existe physiquement, réinitialiser la progression
+        if not existing_files and downloaded_files:
+            print("Aucun fichier trouvé dans le dossier, réinitialisation de la progression...")
+            reset_progress(channel_folder)
+            downloaded_files = set()
+        
+        # Fusionner les deux ensembles pour avoir une liste complète
+        downloaded_files.update(existing_files)
+        
         if downloaded_files:
             print(f"Reprise du téléchargement avec {len(downloaded_files)} fichiers déjà téléchargés")
+            print("Fichiers déjà téléchargés:")
+            for file in sorted(downloaded_files):
+                print(f"- {file}")
         
         # Connexion à Telegram
         client = TelegramClient(SESSION_NAME, API_ID, API_HASH, **CLIENT_SETTINGS)
@@ -190,8 +222,18 @@ async def main():
                 if message.media.document.mime_type == 'audio/mpeg':
                     mp3_messages.append(message)
         
-        with tqdm(total=len(mp3_messages), desc="Téléchargement", unit="fichier") as pbar:
-            for message in mp3_messages:
+        # Filtrer les messages déjà téléchargés
+        remaining_messages = []
+        for message in mp3_messages:
+            file_name = get_file_name(message)
+            base_name = re.sub(r'_\d+\.mp3$', '.mp3', file_name)
+            if base_name not in downloaded_files:
+                remaining_messages.append(message)
+        
+        print(f"\n{len(remaining_messages)} nouveaux fichiers à télécharger")
+        
+        with tqdm(total=len(remaining_messages), desc="Téléchargement", unit="fichier") as pbar:
+            for message in remaining_messages:
                 await download_file(client, message, pbar, downloaded_files, download_folder, channel_folder)
                 # Pause aléatoire entre les téléchargements
                 await asyncio.sleep(random.uniform(1, 3))
@@ -202,7 +244,9 @@ async def main():
         total_time = end_time - start_time
         
         print(f"\nTéléchargement terminé!")
-        print(f"- Fichiers téléchargés: {len(downloaded_files)}")
+        print(f"- Fichiers déjà téléchargés: {len(downloaded_files) - len(remaining_messages)}")
+        print(f"- Nouveaux fichiers téléchargés: {len(remaining_messages)}")
+        print(f"- Total des fichiers: {len(downloaded_files)}")
         print(f"- Temps total: {total_time:.1f} secondes")
         
     except Exception as e:
