@@ -96,7 +96,18 @@ def get_downloaded_files(download_folder):
     try:
         if not os.path.exists(download_folder):
             return set()
-        return {f for f in os.listdir(download_folder) if f.endswith('.mp3')}
+        
+        # Récupérer tous les fichiers MP3
+        files = {f for f in os.listdir(download_folder) if f.endswith('.mp3')}
+        
+        # Créer un ensemble de noms de base (sans les numéros de doublons)
+        base_names = set()
+        for file in files:
+            # Enlever les numéros de doublons (_1, _2, etc.)
+            base_name = re.sub(r'_\d+\.mp3$', '.mp3', file)
+            base_names.add(base_name)
+        
+        return base_names
     except Exception as e:
         print(f"Erreur lors de la récupération des fichiers: {str(e)}")
         return set()
@@ -122,7 +133,10 @@ def get_file_name(message):
 async def download_file(client, message, pbar, downloaded_files, download_folder):
     try:
         file_name = get_file_name(message)
-        if file_name in downloaded_files:
+        
+        # Vérifier si le fichier existe déjà (en ignorant les numéros de doublons)
+        base_name = re.sub(r'_\d+\.mp3$', '.mp3', file_name)
+        if base_name in downloaded_files:
             pbar.update(1)
             pbar.set_description(f"Déjà téléchargé: {file_name}")
             return True
