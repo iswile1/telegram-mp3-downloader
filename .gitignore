@@ -1,1 +1,4 @@
-telegram_mp3s/ 
+telegram_mp3s/
+__pycache__/
+*.pyc
+session_name.session 

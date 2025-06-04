@@ -15,4 +15,4 @@ DOWNLOAD_PATH = 'telegram_mp3s'  # Dossier où seront sauvegardés les fichiers
 SESSION_NAME = 'session_name'  # Nom de la session (ne pas modifier)
 
 # Configuration des messages
-MESSAGE_LIMIT = 100  # Nombre maximum de messages à télécharger
+MESSAGE_LIMIT = None  # None pour télécharger tous les messages
