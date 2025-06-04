@@ -1,4 +1,3 @@
-from telethon import TelegramClient, events
 import os
 import asyncio
 import re
@@ -7,43 +6,9 @@ import time
 import traceback
 from datetime import datetime
 import sys
-
-
-# Chargement de la configuration
-def load_config():
-    try:
-        if not os.path.exists('config.py'):
-            print("Création du fichier de configuration...")
-            with open('config.py', 'w', encoding='utf-8') as f:
-                f.write("""# Configuration Telegram
-API_ID = ''  # Votre API ID
-API_HASH = ''  # Votre API Hash
-PHONE_NUMBER = ''  # Format: '+33612345678'
-CHANNEL_LINK = ''  # Lien du canal Telegram
-""")
-            print("Veuillez remplir le fichier config.py avec vos informations.")
-            sys.exit(1)
-            
-        from config import API_ID, API_HASH, PHONE_NUMBER, CHANNEL_LINK, DOWNLOAD_PATH, SESSION_NAME, MESSAGE_LIMIT
-        
-        if not all([API_ID, API_HASH, PHONE_NUMBER, CHANNEL_LINK]):
-            print("Erreur: Veuillez remplir tous les champs obligatoires (API_ID, API_HASH, PHONE_NUMBER, CHANNEL_LINK) dans config.py")
-            sys.exit(1)
-            
-        # Utiliser les valeurs par défaut si non spécifiées dans config.py
-        DOWNLOAD_FOLDER = DOWNLOAD_PATH if 'DOWNLOAD_PATH' in locals() else 'telegram_mp3s'
-        SESSION_NAME = SESSION_NAME if 'SESSION_NAME' in locals() else 'session_name'
-        MESSAGE_LIMIT = MESSAGE_LIMIT if 'MESSAGE_LIMIT' in locals() else None # Utiliser None pour telecharger tous les messages si pas de limite
-
-        return API_ID, API_HASH, PHONE_NUMBER, CHANNEL_LINK, DOWNLOAD_FOLDER, SESSION_NAME, MESSAGE_LIMIT
-        
-    except ImportError:
-        print("Erreur: Fichier de configuration manquant ou invalide.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Erreur lors du chargement de la configuration : {e}")
-        sys.exit(1)
-
+from telethon import TelegramClient, events
+import random
+import json
 
 # Configuration du client pour optimiser la vitesse
 CLIENT_SETTINGS = {
@@ -58,6 +23,25 @@ CLIENT_SETTINGS = {
     'lang_code': 'fr',
     'system_lang_code': 'fr'
 }
+
+def save_progress(channel_name, downloaded_files):
+    try:
+        progress_file = f"progress_{channel_name}.json"
+        with open(progress_file, 'w', encoding='utf-8') as f:
+            json.dump(list(downloaded_files), f)
+    except Exception as e:
+        print(f"Erreur lors de la sauvegarde de la progression: {str(e)}")
+
+def load_progress(channel_name):
+    try:
+        progress_file = f"progress_{channel_name}.json"
+        if os.path.exists(progress_file):
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                return set(json.load(f))
+        return set()
+    except Exception as e:
+        print(f"Erreur lors du chargement de la progression: {str(e)}")
+        return set()
 
 def print_info():
     current_year = datetime.now().year
@@ -92,18 +76,20 @@ def extract_channel_username(link):
         print(f"Erreur lors de l'extraction du nom d'utilisateur: {str(e)}")
         return link
 
+def get_channel_folder_name(channel_username):
+    # Nettoyer le nom du canal pour créer un nom de dossier valide
+    clean_name = re.sub(r'[<>:"/\\|?*]', '', channel_username)
+    clean_name = clean_name.replace('@', '')
+    return clean_name
+
 def get_downloaded_files(download_folder):
     try:
         if not os.path.exists(download_folder):
             return set()
         
-        # Récupérer tous les fichiers MP3
         files = {f for f in os.listdir(download_folder) if f.endswith('.mp3')}
-        
-        # Créer un ensemble de noms de base (sans les numéros de doublons)
         base_names = set()
         for file in files:
-            # Enlever les numéros de doublons (_1, _2, etc.)
             base_name = re.sub(r'_\d+\.mp3$', '.mp3', file)
             base_names.add(base_name)
         
@@ -130,16 +116,18 @@ def get_file_name(message):
         print(f"Erreur lors de la récupération du nom du fichier: {str(e)}")
         return f"audio_{message.id}.mp3"
 
-async def download_file(client, message, pbar, downloaded_files, download_folder):
+async def download_file(client, message, pbar, downloaded_files, download_folder, channel_name):
     try:
         file_name = get_file_name(message)
-        
-        # Vérifier si le fichier existe déjà (en ignorant les numéros de doublons)
         base_name = re.sub(r'_\d+\.mp3$', '.mp3', file_name)
+        
         if base_name in downloaded_files:
             pbar.update(1)
             pbar.set_description(f"Déjà téléchargé: {file_name}")
             return True
+
+        # Ajouter un délai aléatoire pour éviter la détection
+        await asyncio.sleep(random.uniform(0.5, 2.0))
 
         path = await message.download_media(
             download_folder,
@@ -153,6 +141,9 @@ async def download_file(client, message, pbar, downloaded_files, download_folder
             if path != new_path:
                 os.rename(path, new_path)
             
+            downloaded_files.add(base_name)
+            save_progress(channel_name, downloaded_files)
+            
             pbar.update(1)
             pbar.set_description(f"Téléchargé: {file_name}")
             return True
@@ -164,67 +155,60 @@ async def download_file(client, message, pbar, downloaded_files, download_folder
 
 async def main():
     try:
-        # Chargement de la configuration
-        API_ID, API_HASH, PHONE_NUMBER, CHANNEL_LINK, DOWNLOAD_FOLDER, SESSION_NAME, MESSAGE_LIMIT = load_config()
-        
         print_info()
         print("Démarrage du script...")
         start_time = time.time()
         
-        if not os.path.exists(DOWNLOAD_FOLDER):
-            print(f"Création du dossier {DOWNLOAD_FOLDER}...")
-            os.makedirs(DOWNLOAD_FOLDER)
-
-        downloaded_files = get_downloaded_files(DOWNLOAD_FOLDER)
-        print(f"Fichiers déjà téléchargés: {len(downloaded_files)}")
-
-        print("Connexion à Telegram...")
+        # Charger la configuration
+        from config import API_ID, API_HASH, PHONE_NUMBER, CHANNEL_LINK, SESSION_NAME
+        
+        channel_username = extract_channel_username(CHANNEL_LINK)
+        channel_folder = get_channel_folder_name(channel_username)
+        download_folder = os.path.join('telegram_mp3s', channel_folder)
+        
+        if not os.path.exists(download_folder):
+            print(f"Création du dossier {download_folder}...")
+            os.makedirs(download_folder)
+        
+        print(f"Téléchargement des fichiers dans {download_folder}")
+        
+        # Charger la progression précédente
+        downloaded_files = load_progress(channel_folder)
+        if downloaded_files:
+            print(f"Reprise du téléchargement avec {len(downloaded_files)} fichiers déjà téléchargés")
+        
+        # Connexion à Telegram
         client = TelegramClient(SESSION_NAME, API_ID, API_HASH, **CLIENT_SETTINGS)
         await client.start(phone=PHONE_NUMBER)
-
-        channel_username = extract_channel_username(CHANNEL_LINK)
-        print(f"Connexion établie. Recherche des fichiers MP3 dans {channel_username}...")
-
-        print("Récupération des messages...")
+        
         channel = await client.get_entity(channel_username)
-        messages = await client.get_messages(channel, limit=MESSAGE_LIMIT)
-
-        print("Filtrage des fichiers MP3...")
+        messages = await client.get_messages(channel, limit=None)
+        
         mp3_messages = []
         for message in messages:
             if message.media and hasattr(message.media, 'document'):
                 if message.media.document.mime_type == 'audio/mpeg':
                     mp3_messages.append(message)
-
-        total_files = len(mp3_messages)
-        print(f"\n{total_files} fichiers MP3 trouvés dans le canal")
-        print("Téléchargement des fichiers un par un...")
-
-        with tqdm(total=total_files, desc="Téléchargement", unit="fichier") as pbar:
+        
+        with tqdm(total=len(mp3_messages), desc="Téléchargement", unit="fichier") as pbar:
             for message in mp3_messages:
-                await download_file(client, message, pbar, downloaded_files, DOWNLOAD_FOLDER)
-
-        new_downloaded_files = get_downloaded_files(DOWNLOAD_FOLDER)
-        new_files_count = len(new_downloaded_files) - len(downloaded_files)
-
+                await download_file(client, message, pbar, downloaded_files, download_folder, channel_folder)
+                # Pause aléatoire entre les téléchargements
+                await asyncio.sleep(random.uniform(1, 3))
+        
+        await client.disconnect()
+        
         end_time = time.time()
         total_time = end_time - start_time
-
+        
         print(f"\nTéléchargement terminé!")
-        print(f"- Fichiers déjà présents: {len(downloaded_files)}")
-        print(f"- Nouveaux fichiers téléchargés: {new_files_count}")
-        print(f"- Total des fichiers: {len(new_downloaded_files)}")
+        print(f"- Fichiers téléchargés: {len(downloaded_files)}")
         print(f"- Temps total: {total_time:.1f} secondes")
-        if new_files_count > 0:
-            print(f"- Vitesse moyenne: {new_files_count/total_time:.1f} fichiers/seconde")
-
-        await client.disconnect()
-
+        
     except Exception as e:
         print("\nUne erreur s'est produite!")
         print("Détails de l'erreur:")
         print(traceback.format_exc())
-        print("\nVérifiez que vous avez bien rempli le fichier config.py et que les dépendances sont installées (pip install -r requirements.txt)")
     
     print("\nAppuyez sur Entrée pour fermer...")
     input()
